@@ -3,8 +3,11 @@ import tempfile
 import numpy as np
 from mmdet3d.apis import MonoDet3DInferencer
 from mmdet3d.apis import inference_mono_3d_detector
+from mmdet3d.visualization import Det3DLocalVisualizer
+from mmdet3d.visualization.vis_utils import proj_camera_bbox3d_to_img
+from mmdet3d.apis.inference import init_model
+from mmdet3d.structures import CameraInstance3DBoxes
 import torch
-
 
 # manually compute an autofactor to change the bbox for COCAR
 def get_autofactor(camera_matrix, factor=1.15):
@@ -13,6 +16,7 @@ def get_autofactor(camera_matrix, factor=1.15):
 
 
 def modify_anotation(image_path, camera_matrix):
+    infos = {}
     infos={
         'data_list': [
             {
@@ -32,6 +36,24 @@ def modify_anotation(image_path, camera_matrix):
     infos_file.close()
     return infos_file
 
+'''
+
+def detection_array_to_camera_instance_3d_boxes(detection_array, cam_instance_box):
+        new_camera_instance_3d_bboxe = cam_instance_box.clone()
+        boxes_data = []
+        for detection in detection_array.detections:
+            euler_angles = euler_from_quaternion([detection.pose.pose.orientation.x, detection.pose.pose.orientation.y, detection.pose.pose.orientation.z, detection.pose.pose.orientation.w])
+            boxes_data.append([detection.pose.pose.position.x, 
+                               detection.pose.pose.position.y + (detection.bounding_box_size.vector.y/2.0), 
+                               detection.pose.pose.position.z, 
+                               detection.bounding_box_size.vector.x, 
+                               detection.bounding_box_size.vector.y, 
+                               detection.bounding_box_size.vector.z, 
+                               euler_angles[1]])
+        new_camera_instance_3d_bboxe.tensor = torch.tensor(boxes_data, dtype=torch.float32)
+        return new_camera_instance_3d_bboxe
+
+'''
 
 def main():
     # image_path: str = '/home/ws/uqmfs/mmdetection3d/samples_01/front_medium_1699456120-947280865.jpg'
@@ -49,36 +71,28 @@ def main():
     infos_file = modify_anotation(image_path, camera_matrix)
     autofactor = get_autofactor(projection_matrix)
 
-    # result is a dict with 2 keys: prediction and visualization
+    infer_input = dict(img=image_path, infos=infos_file.name)
+    
     result: dict = inferencer(
-        dict(img=image_path, infos=infos_file.name),
+        infer_input,
         show=False,
-        return_vis=True,
-        no_save_vis=False
-        # out_dir='/tmp/output',
-        # img_out_dir='/tmp/output'
-        # pred_out_dir='./tmp/output'
+        return_datasamples=True,
+        return_vis=True
     )
 
-    preds = result['predictions']
     
-    # pred_bboxes = torch.tensor(preds[0]['bboxes_3d']).cpu().numpy()
-    
-    for i, pred_bbox in enumerate(preds[0]['bboxes_3d']):
+    preds = result['predictions'][0].pred_instances_3d
+
+    for i, pred_bbox in enumerate(preds.bboxes_3d):
         pos_x, pos_y, pos_z = pred_bbox[0:3]
         size_x, size_y = pred_bbox[3:5]
-
-        # modify the bbox with the autofactor
-        pos_x = pos_x / autofactor
-        pos_y = pos_y / autofactor
-        pos_y = pos_y - ((1/autofactor)/2.0 * size_y)
-        
-        preds[0]["bboxes_3d"][i][0:3] = [pos_x, pos_y, pos_z]
-
-
-    inferencer.visualize(inferencer._inputs_to_list(dict(img=image_path, infos=infos_file.name)), 
-                         preds,
-                         show=True, return_vis=True, img_out_dir='/home/ws/uqmfs/mmdetection3d/Infer_FCOS3D/output')
+        pos_y_adjusted = pos_y + 0.5 * size_y
+        preds.bboxes_3d[i][1] = pos_y_adjusted
+    
+    # TODO: check in which line the infer_input is modified
+    infer_input = dict(img=image_path, infos=infos_file.name)
+    vis_input = inferencer._inputs_to_list(infer_input)
+    inferencer.visualize(vis_input, preds, show=True)
 
 
 if __name__ == "__main__":
